@@ -1,4 +1,4 @@
-instruction: Print fully assembled 2nd- and 4th-oreder mimetic gradient, divergence, and Laplacian operator matrices, including the zero elements, on staggered, 1D grids of 5 and 9 cells with uniform widths dx = 1 and using double precision.
+instruction: Print fully assembled 2nd- and 4th-order mimetic gradient, divergence, and Laplacian operator matrices, including the zero elements, on staggered, 1D grids of 5 and 9 cells with uniform widths dx = 1 and using double precision.
 
 response:
 
