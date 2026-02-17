@@ -1,0 +1,673 @@
+instruction: Print fully assembled 2nd- and 4th-order mimetic gradient, divergence, and Laplacian operator matrices, including the zero elements, on staggered, 1D grids of 5 and 9 cells with uniform widths dx = 1 and using double precision.
+
+response:
+
+program print_assembled_1D_operators
+
+  use julienne_m, only : operator(.csv.), string_t, command_line_t
+  use mimetic_operators_1D_m, only : gradient_operator_1D_t, divergence_operator_1D_t
+  implicit none
+
+  type(command_line_t) command_line
+  integer row
+
+  command_line_settings: &
+  associate( &
+     gradient   => command_line%argument_present(["--grad" ]) &
+    ,divergence => command_line%argument_present(["--div"  ]) &
+    ,order      => command_line%flag_value("--order") &
+  )
+
+    if (command_line%argument_present([character(len=len("--help")) :: ("--help"), "-h"])) then
+      stop                                 new_line('') // new_line('') &
+        // 'Usage:'                                     // new_line('') &
+        // '  fpm run \'                                // new_line('') &
+        // '  --example print-assembled-1D-operators \' // new_line('') &
+        // '  --compiler flang-new \'                   // new_line('') &
+        // '  --flag "-O3" \'                           // new_line('') & 
+        // '  -- [--help|-h] | [--grad]  [--div] [--order <integer>]' // new_line('') // new_line('') &
+        // 'where square brackets indicate optional arguments and angular brackets indicate user input values.' // new_line('')
+    end if
+
+    default_usage: &
+    associate(print_all => .not. any([gradient, divergence, len(order)/=0]))
+
+      if (print_all .or. (gradient   .and. len(order)==0) .or. (gradient   .and. order=="2")) call print_gradient_operator(  k=2, dx=1D0, m=5)
+      if (print_all .or. (divergence .and. len(order)==0) .or. (divergence .and. order=="2")) call print_divergence_operator(k=2, dx=1D0, m=5)
+      if (print_all .or. (gradient   .and. len(order)==0) .or. (gradient   .and. order=="4")) call print_gradient_operator(  k=4, dx=1D0, m=9)
+      if (print_all .or. (divergence .and. len(order)==0) .or. (divergence .and. order=="4")) call print_divergence_operator(k=4, dx=1D0, m=9)
+
+    end associate default_usage
+  end associate command_line_settings
+
+contains
+
+  subroutine print_gradient_operator(k, dx, m)
+    integer, intent(in) :: k, m 
+    double precision, intent(in) :: dx
+
+    print *, new_line(""), "Gradient operator: order = ", k, " | cells = ", m, " | dx = ", dx
+
+    associate(grad_op => gradient_operator_1D_t(k, dx, cells=m))
+      associate(G => grad_op%assemble())
+        do row = 1, size(G,1)
+          associate(csv_row => .csv. string_t(G(row,:)))
+            print '(a)', csv_row%string()
+          end associate
+        end do
+      end associate
+    end associate
+
+  end subroutine
+
+  subroutine print_divergence_operator(k, dx, m)
+    integer, intent(in) :: k, m 
+    double precision, intent(in) :: dx
+
+    print *, new_line(""), "Divergence operator: order = ", k, " | cells = ", m, " | dx = ", dx
+
+    associate(div_op => divergence_operator_1D_t(k, dx, cells=m))
+      associate(D => div_op%assemble())
+        do row = 1, size(D,1)
+          associate(csv_row => .csv. string_t(D(row,:)))
+            print '(a)', csv_row%string()
+          end associate
+        end do
+      end associate
+    end associate
+
+  end subroutine
+
+end program
+
+
+instruction: Compute the 2nd- and 4th-order mimetic discrete approximations to the gradient and Laplacian of the function f = (x**3)/6 + (x**2)/2 + 1 on a staggered, 1D grid of 10 cells uniformly covering the domain [0,20] and using double precision.
+
+response:
+module functions_m
+  implicit none
+
+contains
+
+  pure function f(x)
+    double precision, intent(in) :: x(:)
+    double precision, allocatable :: f(:)
+    f = (x**3)/6 + (x**2)/2 + 1
+  end function
+
+  double precision elemental function df_dx(x)
+    double precision, intent(in) :: x
+    df_dx = (x**2)/2 + x
+  end function
+
+  double precision elemental function d2f_dx2(x)
+    double precision, intent(in) :: x
+    d2f_dx2 = x + 1
+  end function
+
+end module functions_m
+
+program div_grad_laplacian_1D
+  use functions_m
+  use julienne_m, only :  file_t, string_t, operator(.separatedBy.)
+  use mole_m, only : scalar_1D_t, scalar_1D_initializer_i
+#ifdef __GFORTRAN__
+  use mole_m, only : vector_1D_t, laplacian_1D_t, gradient_1D_t
+#endif
+  implicit none
+
+  procedure(scalar_1D_initializer_i), pointer :: scalar_1D_initializer => f
+
+  print *,new_line('')
+  print *,"            2nd-order approximations"
+  print *,"            ========================"
+
+  call output(order=2)
+
+  print *,new_line('')
+  print *,"            4th-order approximations"
+  print *,"            ========================"
+
+  call output(order=4)
+
+contains
+
+#ifndef __GFORTRAN__
+
+  subroutine output(order)
+    integer, intent(in) :: order
+  
+    associate(   s           => scalar_1D_t(scalar_1D_initializer, order=order, cells=10, x_min=0D0, x_max=20D0))
+      associate( grad_s      => .grad. s &
+                ,laplacian_s => .laplacian. s)
+        associate( s_grid           => s%grid()      &
+                  ,grad_s_grid      => grad_s%grid() &
+                  ,laplacian_s_grid => laplacian_s%grid())
+          associate( s_table           => tabulate( &
+                        string_t([character(len=18)::"x", "f(x) exp"         , "f(x) act"         ]) &
+                       ,s_grid, f(s_grid), s%values() &
+                     ) &
+                    ,grad_s_table      => tabulate( &
+                       string_t([character(len=18)::"x", ".grad. f exp"     , ".grad. f act"     ])  &
+                      ,grad_s_grid, df_dx(grad_s_grid), grad_s%values() &
+                     ) &
+                    ,laplacian_s_table => tabulate( &
+                       string_t([character(len=18)::"x", ".laplacian. f exp", ".laplacian. f act"])  &
+                      ,laplacian_s_grid, d2f_dx2(laplacian_s_grid), laplacian_s%values()) &
+                     )
+             call s_table%write_lines()
+             call grad_s_table%write_lines()
+             call laplacian_s_table%write_lines()
+          end associate
+        end associate
+      end associate
+    end associate
+  end subroutine
+
+#else
+
+  subroutine output(order)
+    integer, intent(in) :: order
+  
+    type(scalar_1D_t) s
+    type(gradient_1D_t) grad_s
+    type(laplacian_1D_t) laplacian_s
+    type(file_t) s_table, grad_s_table, laplacian_s_table
+    double precision, allocatable,dimension(:) :: s_grid, grad_s_grid, laplacian_s_grid
+
+    s = scalar_1D_t(scalar_1D_initializer, order=order, cells=10, x_min=0D0, x_max=20D0)
+    grad_s = .grad. s
+    laplacian_s = .laplacian. s
+
+    s_grid = s%grid()
+    grad_s_grid = grad_s%grid()
+    laplacian_s_grid = laplacian_s%grid()
+
+    s_table           = tabulate( &
+       string_t([character(len=18)::"x", "f(x) exp."         , "f(x) act."         ]) &
+      ,s_grid, f(s_grid), s%values() &
+    )
+    grad_s_table      = tabulate( &
+       string_t([character(len=18)::"x", ".grad. f exp."     , ".grad. f act."     ]) &
+      ,grad_s_grid, df_dx(grad_s_grid), grad_s%values() &
+    )
+    laplacian_s_table = tabulate( &
+       string_t([character(len=18)::"x", ".laplacian. f exp.", ".laplacian. f act."]) &
+      ,laplacian_s_grid, d2f_dx2(laplacian_s_grid), laplacian_s%values() &
+    )
+    call s_table%write_lines()
+    call grad_s_table%write_lines()
+    call laplacian_s_table%write_lines()
+  end subroutine
+
+#endif
+
+  pure function tabulate(headings, abscissa, expected, actual) result(file)
+    double precision, intent(in), dimension(:) :: abscissa, expected, actual
+    type(string_t), intent(in) :: headings(:)
+    type(file_t) file
+    integer line
+
+    file = file_t([ &
+       string_t("") &
+      ,headings .separatedBy. "  " &
+      ,string_t("----------------------------------------------------------") &
+      ,[( string_t(abscissa(line)) // "      " // string_t(expected(line)) // "        " // string_t(actual(line)), line = 1, size(abscissa))] &
+    ])
+  end function
+
+end program
+
+instruction: Print each term in the following residual formed from the extended Gauss-divergence theorem using one-dimensional (1D) mimetic discretizations: ```fortran \n residual =  .SSS. [v .dot. (.grad. f)] + .SSS. (f * .div. v) - .SS. (v .x. f) \n ``` where .SSS. and .SS. are the 1D equivalents of a volume integral over the whole domain and a surface integral over the domain boundary, respectively. Use INSERT_FEATURE.
+
+response:
+
+      module integrand_operands_m
+      implicit none
+      contains
+
+      pure function scalar(x) result(f)
+      double precision, intent(in) :: x(:)
+      double precision, allocatable :: f(:)
+      f =(x**2)/2
+      end function
+
+      pure function vector(x) result(v)
+      double precision, intent(in) :: x(:)
+      double precision, allocatable :: v(:)
+      v = x
+      end function
+
+      end module
+
+      program extended_gauss_divergence
+
+
+
+
+
+      use julienne_m, only : command_line_t
+      use integrand_operands_m, only : scalar, vector
+      use mole_m, only : scalar_1D_t, scalar_1D_initializer_i, vector_1D&
+     &_t, vector_1D_initializer_i
+      implicit none
+      procedure(scalar_1D_initializer_i), pointer :: scalar_1D_initializ&
+     &er => scalar
+      procedure(vector_1D_initializer_i), pointer :: vector_1D_initializ&
+     &er => vector
+      type numerical_arguments_t
+
+
+      integer :: cells_=200, order_=4
+      double precision :: x_min_=0D0, x_max_=1D0
+      end type
+
+      type text_flags_t
+      logical div_, grad_, vf_
+      end type
+
+      type(command_line_t) command_line
+      double precision SSS_v_dot_grad_f_dV, SSS_f_div_v_dV, SS_f_v_dot_d&
+     &A
+      if(command_line%argument_present([character(len=len("--help")) ::(&
+     &"--help"), "-h"])) then
+      stop                            new_line('') // new_line('') // 'U&
+     &sage:' // new_line('') // '  fpm run \\' // new_line('') // '  --e&
+     &xample extended-gauss-divergence \\' // new_line('') // '  --compi&
+     &ler flang-new \\' // new_line('') // '  --flag "-O3" \\' // new_li&
+     &ne('') // '  -- [--help|-h] | [[--cells <integer>] [--order <integ&
+     &er>] [--xmin <double precision>] [--xmax <double precision>] [--di&
+     &v|d] [--grad|g] [--vf|f]]' // new_line('') // new_line('') // 'whe&
+     &re pipes (|) separate square-bracketed optional arguments and angu&
+     &lar brackets indicate user input values.' // new_line('')
+      end if
+
+      call execute_command_line("grep '<-- scalar' example/extended-gaus&
+     &s-divergence.F90 | grep -v execute_command", wait=.true.)
+      call execute_command_line("grep '<-- vector' example/extended-gaus&
+     &s-divergence.F90 | grep -v execute_command", wait=.true.)
+
+
+
+
+
+
+      command_line_arguments: associate(args => get_numerical_arguments(&
+     &))
+
+      text_flags: associate(flags => text_flags_t(div_ = command_line%ar&
+     &gument_present([ character(len=len("--div")) :: "--div" , "-d" ]) &
+     &,grad_ = command_line%argument_present([ character(len=len("--grad&
+     &")) :: "--grad", "-g" ]) ,vf_ = command_line%argument_present([ ch&
+     &aracter(len=len("--vf")) :: "--vf" , "-f" ])))
+
+      print_all: associate(all_terms => merge(.true., .false., all([flag&
+     &s%div_, flags%grad_, flags%vf_]) .or. .not. any([flags%div_, flags&
+     &%grad_, flags%vf_])))
+        integrand_factors: associate(f => scalar_1D_t(scalar_1D_initiali&
+     &zer, args%order_, args%cells_, args%x_min_, args%x_max_) ,v => vec&
+     &tor_1D_t(vector_1D_initializer, args%order_, args%cells_, args%x_m&
+     &in_, args%x_max_))
+
+          differential_volume: associate(dV => f%dV())
+
+
+            if (flags%grad_ .or. all_terms) then
+              SSS_v_dot_grad_f_dV = .SSS. (v .dot. .grad. f) * dV
+              print '(a,g0)', ".SSS. (v .dot. .grad. f) * dV = ", SSS_v_&
+     &dot_grad_f_dV
+            end if
+
+            if (flags%div_ .or. all_terms) then
+              SSS_f_div_v_dV      = .SSS. (f * .div. v) * dV
+              print '(a,g0)', ".SSS. (     f * .div. v) * dV = ", SSS_f_&
+     &div_v_dV
+            end if
+
+          end associate differential_volume
+
+          differential_area: associate(dA => v%dA())
+
+            if (flags%vf_ .or. all_terms) then
+              SS_f_v_dot_dA       =  .SS. (f .x. (v .dot. dA))
+              print '(a,g0)', "     -.SS. (f .x. (v .dot. dA)) = ", -SS_&
+     &f_v_dot_dA
+            end if
+
+            if (all_terms) then
+              print '(a)'   , "-----------------------------------------&
+     &-----------"
+              print '(26x,a,g0,a)',"sum = ", SSS_v_dot_grad_f_dV  +  SSS&
+     &_f_div_v_dV - SS_f_v_dot_dA, " (residual)"
+            end if
+
+          end associate differential_area
+        end associate integrand_factors
+      end associate print_all
+      end associate text_flags
+
+      end associate command_line_arguments
+
+
+
+
+      contains
+
+      function get_numerical_arguments() result(numerical_arguments)
+      type(numerical_arguments_t) numerical_arguments
+
+
+
+
+
+
+
+
+      associate(cells_string => command_line%flag_value("--cells") ,orde&
+     &r_string => command_line%flag_value("--order") ,x_min_string => co&
+     &mmand_line%flag_value("--x_min") ,x_max_string => command_line%fla&
+     &g_value("--x_max"))
+
+
+
+      if (len(cells_string)/=0) read(cells_string,*) numerical_arguments&
+     &%cells_
+      if (len(order_string)/=0) read(order_string,*) numerical_arguments&
+     &%order_
+      if (len(x_min_string)/=0) read(x_min_string,*) numerical_arguments&
+     &%x_min_
+      if (len(x_max_string)/=0) read(x_max_string,*) numerical_arguments&
+     &%x_max_
+      end associate
+
+
+      end function
+
+      end program
+
+
+instruction: Print each term in the following residual formed from the extended Gauss-divergence theorem using one-dimensional (1D) mimetic discretizations: ```fortran \n residual =  .SSS. [v .dot. (.grad. f)] + .SSS. (f * .div. v) - .SS. (v .x. f) \n ``` where .SSS. and .SS. are the 1D equivalents of a volume integral over the whole domain and a surface integral over the domain boundary, respectively. Don't use INSERT_FEATURE.
+
+response:
+
+module integrand_operands_m
+  implicit none
+contains
+
+  pure function scalar(x) result(f)
+    double precision, intent(in) :: x(:)
+    double precision, allocatable :: f(:)
+    f = (x**2)/2 ! <-- scalar function
+  end function
+
+  pure function vector(x) result(v)
+    double precision, intent(in) :: x(:)
+    double precision, allocatable :: v(:)
+    v = x        ! <-- vector function
+  end function
+
+end module
+
+program extended_gauss_divergence
+  !! Print each term in the following residual formed from the extended Gauss-divergence
+  !! theorem using one-dimensional (1D) 4th-(default) or 2nd-order mimetic discretizations:
+  !! `residual = .SSS. (v .dot. .grad. f) * dV +.SSS. (f * .div. v) * dV - .SS. (f .x. (v .dot. dA))`
+  !! where `.SSS.` and `.SS.` are the 1D equivalents of a volume integral over the whole
+  !! domain and a surface integral over a domain boundary of unit area, respectively.
+  use julienne_m, only : command_line_t
+  use integrand_operands_m, only : scalar, vector
+  use mole_m, only : scalar_1D_t, scalar_1D_initializer_i, vector_1D_t, vector_1D_initializer_i
+  implicit none
+  procedure(scalar_1D_initializer_i), pointer :: scalar_1D_initializer => scalar
+  procedure(vector_1D_initializer_i), pointer :: vector_1D_initializer => vector
+
+  type numerical_arguments_t
+    !! Define default initializations that can be overridden with the command-line arguments
+    !! detailed by the usage information below
+    integer :: cells_=200, order_=4
+    double precision :: x_min_=0D0, x_max_=1D0
+  end type
+
+  type text_flags_t
+    logical div_, grad_, vf_
+  end type
+
+  type(command_line_t) command_line
+  double precision SSS_v_dot_grad_f_dV, SSS_f_div_v_dV, SS_f_v_dot_dA
+
+  if (command_line%argument_present([character(len=len("--help")) :: ("--help"), "-h"])) then
+    stop                              new_line('') // new_line('') &
+      // 'Usage:'                                  // new_line('') &
+      // '  fpm run \'                             // new_line('') &
+      // '  --example extended-gauss-divergence \' // new_line('') &
+      // '  --compiler flang-new \'                // new_line('') &
+      // '  --flag "-O3" \'                        // new_line('') &
+      // '  -- [--help|-h] | [[--cells <integer>] [--order <integer>] [--xmin <double precision>] [--xmax <double precision>] [--div|d] [--grad|g] [--vf|f]]' &
+      //                              new_line('') // new_line('') &
+      // 'where pipes (|) separate square-bracketed optional arguments and angular brackets indicate user input values.' // new_line('')
+  end if
+
+  call execute_command_line("grep '<-- scalar' example/extended-gauss-divergence.F90 | grep -v execute_command", wait=.true.)
+  call execute_command_line("grep '<-- vector' example/extended-gauss-divergence.F90 | grep -v execute_command", wait=.true.)
+
+  command_line_arguments: &
+  block
+    type(numerical_arguments_t) args
+    args  = get_numerical_arguments()
+
+    text_flags: &
+    associate(flags => text_flags_t( &
+       div_  = command_line%argument_present( [ character(len=len("--div" )) :: "--div" , "-d" ] ) &
+      ,grad_ = command_line%argument_present( [ character(len=len("--grad")) :: "--grad", "-g" ] ) &
+      ,vf_   = command_line%argument_present( [ character(len=len("--vf"  )) :: "--vf"  , "-f" ] ) &
+    ))
+      print_all: &
+      associate(all_terms => merge(.true., .false., all([flags%div_, flags%grad_, flags%vf_]) .or. .not. any([flags%div_, flags%grad_, flags%vf_])))
+        integrand_factors: &
+        associate( &
+           f => scalar_1D_t(scalar_1D_initializer, args%order_, args%cells_, args%x_min_, args%x_max_) &
+          ,v => vector_1D_t(vector_1D_initializer, args%order_, args%cells_, args%x_min_, args%x_max_) &
+        )
+          differential_volume: &
+          associate(dV => f%dV())
+
+            if (flags%grad_ .or. all_terms) then
+              SSS_v_dot_grad_f_dV = .SSS. (v .dot. .grad. f) * dV
+              print '(a,g0)', ".SSS. (v .dot. .grad. f) * dV = ", SSS_v_dot_grad_f_dV
+            end if
+
+            if (flags%div_ .or. all_terms) then
+              SSS_f_div_v_dV      = .SSS. (f * .div. v) * dV
+              print '(a,g0)', ".SSS. (     f * .div. v) * dV = ", SSS_f_div_v_dV
+            end if
+
+          end associate differential_volume
+
+          differential_area: &
+          associate(dA => v%dA())
+            if (flags%vf_ .or. all_terms) then
+              SS_f_v_dot_dA       =  .SS. (f .x. (v .dot. dA))
+              print '(a,g0)', "     -.SS. (f .x. (v .dot. dA)) = ", -SS_f_v_dot_dA
+            end if
+
+            if (all_terms) then
+              print '(a)'   , "----------------------------------------------------"
+              print '(26x,a,g0,a)',"sum = ", SSS_v_dot_grad_f_dV  +  SSS_f_div_v_dV - SS_f_v_dot_dA, " (residual)"
+            end if
+
+          end associate differential_area
+        end associate integrand_factors
+      end associate print_all
+    end associate text_flags
+  end block command_line_arguments
+
+
+contains
+
+  function get_numerical_arguments() result(numerical_arguments)
+    type(numerical_arguments_t) numerical_arguments
+    character(len=:), allocatable :: cells_string, order_string, x_min_string, x_max_string
+    cells_string = command_line%flag_value("--cells")
+    order_string = command_line%flag_value("--order")
+    x_min_string = command_line%flag_value("--x_min")
+    x_max_string = command_line%flag_value("--x_max")
+      if (len(cells_string)/=0) read(cells_string,*) numerical_arguments%cells_
+      if (len(order_string)/=0) read(order_string,*) numerical_arguments%order_
+      if (len(x_min_string)/=0) read(x_min_string,*) numerical_arguments%x_min_
+      if (len(x_max_string)/=0) read(x_max_string,*) numerical_arguments%x_max_
+  end function
+
+end program
+
+
+instruction: Please write a Julienne test for mole that tests that a 1D mimetic divergence operator correctly computes 2nd-order .div.(.grad. (x**2)/2) within a specified tolerance.
+
+response:
+
+#include "language-support.F90"
+  !! include Julienne preprocessor  macros
+
+module divergence_operator_1D_test1_m
+  use julienne_m, only : &
+     operator(//) &
+    ,operator(.all.) &
+    ,operator(.also.) &
+    ,operator(.approximates.) &
+    ,operator(.within.) &
+    ,passing_test &
+    ,string_t &
+    ,test_t &
+    ,test_description_t &
+    ,test_diagnosis_t &
+    ,test_result_t &
+    ,usher
+  use mole_m, only : vector_1D_t, vector_1D_initializer_i, scalar_1D_t, scalar_1D_initializer_i
+#ifdef __GFORTRAN__
+  use mole_m, only : divergence_1D_t
+#endif
+  implicit none
+
+  type, extends(test_t) :: divergence_operator_1D_test1_t
+  contains
+    procedure, nopass :: subject
+    procedure, nopass :: results
+  end type
+
+  double precision, parameter :: tight_tolerance = 5D-14, loose_tolerance = 1D-08, rough_tolerance = 1D-02, crude_tolerance = 2D-02
+
+contains
+
+  pure function subject() result(test_subject)
+    character(len=:), allocatable :: test_subject
+    test_subject = 'A 1D mimetic divergence operator'
+  end function
+
+  function results() result(test_results)
+    type(divergence_operator_1D_test1_t) divergence_operator_1D_test
+    type(test_result_t), allocatable :: test_results(:)
+
+    test_results = divergence_operator_1D_test%run([ & 
+       test_description_t( &
+          'computing 2nd-order .div.(.grad. (x**2)/2) within ' // string_t(tight_tolerance) &
+         ,usher(check_2nd_order_div_grad_parabola)) &
+    ])
+  end function
+
+  pure function parabola(x) result(y)
+    double precision, intent(in) :: x(:)
+    double precision, allocatable :: y(:)
+    y = (x**2)/2
+  end function
+
+  function check_2nd_order_div_grad_parabola() result(test_diagnosis)
+    type(test_diagnosis_t) test_diagnosis
+    procedure(scalar_1D_initializer_i), pointer :: scalar_1D_initializer => parabola
+    double precision, parameter :: expected_divergence = 1D0
+#ifdef __GFORTRAN__
+    type(divergence_1D_t) div_grad_scalar
+    div_grad_scalar = .div. (.grad. scalar_1D_t(scalar_1D_initializer, order=2, cells=16, x_min=0D0, x_max=5D0))
+#else
+    associate(div_grad_scalar => .div. (.grad. scalar_1D_t(scalar_1D_initializer, order=2, cells=16, x_min=0D0, x_max=5D0)))
+#endif
+ 
+      test_diagnosis = passing_test()
+      test_diagnosis = test_diagnosis .also. (.all. (div_grad_scalar%values() .approximates. expected_divergence .within. tight_tolerance)) &
+                     // " (2nd-order .div. (.grad. (x**2)/2))"
+
+#ifndef __GFORTRAN__
+    end associate
+#endif
+  end function
+
+  function check_4th_order_div_grad_parabola() result(test_diagnosis)
+    type(test_diagnosis_t) test_diagnosis
+    procedure(scalar_1D_initializer_i), pointer :: scalar_1D_initializer => parabola
+    double precision, parameter :: expected_divergence = 1D0
+#ifdef __GFORTRAN__
+    type(divergence_1D_t) div_grad_scalar
+    div_grad_scalar = .div. (.grad. scalar_1D_t(scalar_1D_initializer, order=4, cells=16, x_min=0D0, x_max=9D0))
+#else
+    associate(div_grad_scalar => .div. (.grad. scalar_1D_t(scalar_1D_initializer, order=4, cells=16, x_min=0D0, x_max=9D0)))
+#endif
+
+      test_diagnosis = passing_test()
+      test_diagnosis = test_diagnosis .also. (.all. (div_grad_scalar%values() .approximates. expected_divergence .within. tight_tolerance)) &
+                     // " (4th-order .div. (.grad. (x**2)/2))"
+
+#ifndef __GFORTRAN__
+    end associate
+#endif
+  end function
+
+  pure function sinusoid(x) result(y)
+    double precision, intent(in) :: x(:)
+    double precision, allocatable :: y(:)
+    y = sin(x) + cos(x)
+  end function
+
+  function check_2nd_order_div_sinusoid_convergence() result(test_diagnosis)
+    type(test_diagnosis_t) test_diagnosis
+    procedure(vector_1D_initializer_i), pointer :: vector_1D_initializer => sinusoid
+    double precision, parameter :: pi = 3.141592653589793D0
+    integer, parameter :: order_desired = 2, coarse_cells=100, fine_cells=coarse_cells+1
+#ifdef __GFORTRAN__
+    type(divergence_1D_t) div_coarse, div_fine
+    div_coarse = .div. vector_1D_t(vector_1D_initializer , order=order_desired, cells=coarse_cells, x_min=0D0, x_max=2*pi)
+    div_fine   = .div. vector_1D_t(vector_1D_initializer , order=order_desired, cells=fine_cells  , x_min=0D0, x_max=2*pi)
+#else
+    associate( &
+       div_coarse => .div. vector_1D_t(vector_1D_initializer , order=order_desired, cells=coarse_cells, x_min=0D0, x_max=2*pi) &
+      ,div_fine   => .div. vector_1D_t(vector_1D_initializer , order=order_desired, cells=fine_cells  , x_min=0D0, x_max=2*pi) &
+    )
+#endif
+      associate( &
+         x_coarse => div_coarse%grid() &
+        ,x_fine   => div_fine%grid())
+        associate( &
+           grad_coarse => cos(x_coarse) - sin(x_coarse) &
+          ,grad_fine   => cos(x_fine)   - sin(x_fine) &
+          ,div_coarse_values => div_coarse%values() &
+          ,div_fine_values   => div_fine%values() &
+        )
+          test_diagnosis = passing_test()
+          test_diagnosis = test_diagnosis .also. (.all. (div_coarse_values .approximates. grad_coarse .within. rough_tolerance)) &
+            // " (coarse-grid 2nd-order .div. [sin(x) + cos(x)])"
+          test_diagnosis = test_diagnosis .also. (.all. (div_fine_values .approximates. grad_fine .within. rough_tolerance)) &
+            // " (fine-grid 2nd-order .div. [sin(x) + cos(x)])"
+          associate( &
+             error_coarse_max => maxval(abs(div_coarse_values - grad_coarse)) &
+            ,error_fine_max   => maxval(abs(div_fine_values   - grad_fine)) &
+          )
+            associate(order_actual => log(error_coarse_max/error_fine_max)/log(dble(fine_cells)/coarse_cells))
+              test_diagnosis = test_diagnosis .also. (order_actual .approximates. dble(order_desired) .within. rough_tolerance) &
+                // " (convergence rate for 2nd-order .div. [sin(x) + cos(x)])"
+            end associate
+          end associate
+        end associate
+      end associate
+#ifndef __GFORTRAN__
+    end associate
+#endif
+  end function
+
+end module divergence_operator_1D_test1_m
