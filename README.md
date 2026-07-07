@@ -122,7 +122,3 @@ To cite AstraAI, please use the [arxiv paper](https://arxiv.org/abs/2603.27423)
       url={https://arxiv.org/abs/2603.27423}, 
 }
 ```
-
-
-
-
